@@ -16,13 +16,24 @@
     <CheatEntry>
       <ID>10</ID>
       <Description>"Y 0.8"</Description>
-      <ShowAsHex>1</ShowAsHex>
       <ShowAsSigned>0</ShowAsSigned>
       <VariableType>Float</VariableType>
       <Address>"Furious Fish.exe"+0424BE40</Address>
       <Offsets>
         <Offset>934</Offset>
         <Offset>3B0</Offset>
+      </Offsets>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>17</ID>
+      <Description>"Y 0.9"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>Float</VariableType>
+      <Address>"Furious Fish.exe"+0424BE40</Address>
+      <Offsets>
+        <Offset>464</Offset>
+        <Offset>0</Offset>
+        <Offset>288</Offset>
       </Offsets>
     </CheatEntry>
   </CheatEntries>

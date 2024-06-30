@@ -48,17 +48,18 @@ struct Settings {
     ///
     /// You can split at various heights or only at the end. You need to create
     /// splits for each multiple that you choose and one for the end. The end is
-    /// at 242m.
+    /// at 239m.
     when: When,
 }
 
 #[derive(Copy, Clone, Pod, Zeroable)]
-#[repr(transparent)]
-struct Height {
+#[repr(C)]
+struct Position {
+    x: f32,
     y: f32,
 }
 
-impl Height {
+impl Position {
     fn meters(self) -> f32 {
         (300.0 - self.y) * (1.0 / 200.0)
     }
@@ -74,22 +75,22 @@ async fn main() {
                 let (module, _) = process.wait_module_range("Furious Fish.exe").await;
                 let mut max_chunk = 0;
                 let mut max_height = 0.0;
-                let mut height = Watcher::new();
+                let mut position = Watcher::new();
                 loop {
-                    if let Some(height) = height.update(
+                    if let Some(position) = position.update(
                         process
-                            .read_pointer_path::<Height>(
+                            .read_pointer_path::<Position>(
                                 module,
                                 PointerSize::Bit64,
-                                &[0x0424BE40, 0x3B0, 0x934],
+                                &[0x0424BE40, 0x288, 0x0, 0x460],
                             )
                             .ok(),
                     ) {
-                        let meters = height.meters();
+                        let meters = position.meters();
 
                         match timer::state() {
                             TimerState::NotRunning => {
-                                if height.check(|h| h.y != f32::from_bits(0xC1C80000)) {
+                                if position.check(|h| h.y != -25.0) {
                                     timer::start();
                                 }
                                 max_chunk = 0;
@@ -104,7 +105,11 @@ async fn main() {
 
                                 let chunk = settings.when.to_chunk(meters);
 
-                                if chunk > max_chunk || height.y < -48620.0 {
+                                if (chunk > max_chunk && position.y > -47620.0)
+                                    || (position.y < -47620.0
+                                        && position.x < -85.0
+                                        && position.y > -47626.0)
+                                {
                                     max_chunk = chunk;
                                     timer::split();
                                 }

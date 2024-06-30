@@ -3,7 +3,7 @@
 An auto splitter for [Furious
 Fish](https://furiousfishllc.itch.io/furious-fish), a game that BoxBox, Michael
 Reeves, and LilyPichu have been working on in their Game Jam which started on
-2024-06-27. The auto splitter is currently compatible with version 0.8.
+2024-06-27. The auto splitter is currently compatible with version 0.9.
 
 ## Compilation
 
