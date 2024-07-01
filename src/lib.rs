@@ -174,9 +174,16 @@ async fn main() {
     }
 }
 
+#[allow(clippy::inconsistent_digit_grouping)]
 fn should_split(y: f32, settings: &mut Settings, max_chunk: &mut i32) -> bool {
-    if y <= -112578.67 {
+    if y <= -1125_78.67 {
         return true;
+    }
+
+    if y < -1120_00.0 {
+        // This is to make sure that at 1125m we only split the very final
+        // split, not any multiple.
+        return false;
     }
 
     settings.update();
