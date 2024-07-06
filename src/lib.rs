@@ -2,15 +2,15 @@
 
 use asr::{
     future::next_tick,
+    game_engine::godot::{Node2D, SceneTree},
     itoa,
     settings::Gui,
     string::ArrayString,
+    time_util,
     timer::{self, TimerState},
     watcher::Watcher,
     Process,
 };
-
-mod godot;
 
 asr::async_main!(stable);
 asr::panic_handler!();
@@ -68,49 +68,29 @@ async fn main() {
             .until_closes(async {
                 let (module, _) = process.wait_module_range("Furious Fish.exe").await;
 
-                let (scene_tree, root_node) = asr::future::retry(|| {
-                    let scene_tree = godot::SceneTree::get(&process, module).ok()?;
-                    let root_node = scene_tree.get_root(&process).ok()?;
-                    Some((scene_tree, root_node))
-                })
-                .await;
+                let scene_tree = SceneTree::wait_locate(&process, module).await;
+                let root_node = scene_tree.wait_get_root(&process).await;
 
                 asr::print_message("Found root node");
 
                 let (player_node, start_frame) = asr::future::retry(|| {
                     // FIXME: The last scene is the "most active one". Michael
                     // apparently forgot to remove the previous scenes when
-                    // navigating the title and shop. If they don't fix it, we
-                    // should at least iterate backwards.
+                    // navigating the title and shop.
                     let game_node = root_node
-                        .children()
-                        .iter(&process)
-                        .last()?
+                        .get_children()
+                        .iter_back(&process)
+                        .next()?
                         .1
                         .deref(&process)
                         .ok()?;
 
-                    // FIXME: Do a proper hash map lookup.
-
                     let player_node = game_node
-                        .children()
-                        .iter(&process)
-                        .find_map(|(name, node)| {
-                            if name
-                                .deref(&process)
-                                .ok()?
-                                .read::<6>(&process)
-                                .ok()?
-                                .matches_str("Player")
-                            {
-                                node.deref(&process).ok()
-                            } else {
-                                None
-                            }
-                        })?
-                        .cast::<godot::Node2D>();
+                        .find_child(b"Player", &process)
+                        .ok()??
+                        .unchecked_cast::<Node2D>();
 
-                    let start_frame = scene_tree.get_current_frame(&process).ok()?;
+                    let start_frame = scene_tree.get_frame(&process).ok()?;
 
                     Some((player_node, start_frame))
                 })
@@ -132,7 +112,7 @@ async fn main() {
                         continue;
                     };
 
-                    let Ok(frame) = scene_tree.get_current_frame(&process) else {
+                    let Ok(frame) = scene_tree.get_frame(&process) else {
                         continue;
                     };
 
@@ -143,7 +123,7 @@ async fn main() {
                             max_height = meters;
                         }
 
-                        timer::set_game_time(asr::time_util::frame_count::<60>(
+                        timer::set_game_time(time_util::frame_count::<60>(
                             (frame - start_frame) as u64,
                         ));
 
