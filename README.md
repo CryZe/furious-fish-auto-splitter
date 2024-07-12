@@ -4,7 +4,12 @@ An auto splitter for [Furious
 Fish](https://furiousfishllc.itch.io/furious-fish), a game that BoxBox, Michael
 Reeves, and LilyPichu have been working on in their Game Jam which started on
 2024-06-27. The auto splitter is currently compatible with all versions since
-1.0.
+1.6.
+
+You can configure the auto splitter to split at various heights or only at the
+end. You need to create splits for each multiple that you choose and one for the
+end. The end is at 1258m. The last split before the end is at 1150m or below
+depending on the setting.
 
 ## Compilation
 
@@ -26,7 +31,8 @@ The auto splitter is then available at:
 target/wasm32-unknown-unknown/release/furious_fish_auto_splitter.wasm
 ```
 
-Make sure to look into the [API documentation](https://livesplit.org/asr/asr/) for the `asr` crate.
+Make sure to look into the [API documentation](https://livesplit.org/asr/asr/)
+for the `asr` crate.
 
 ## Development
 

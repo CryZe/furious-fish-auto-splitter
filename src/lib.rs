@@ -1,14 +1,13 @@
 #![no_std]
 
 use asr::{
-    future::next_tick,
-    game_engine::godot::{Node2D, SceneTree},
+    future::{next_tick, retry},
+    game_engine::godot::{CSharpScriptInstance, Node2D, SceneTree},
     itoa,
     settings::Gui,
     string::ArrayString,
-    time_util,
+    time::Duration,
     timer::{self, TimerState},
-    watcher::Watcher,
     Process,
 };
 
@@ -51,7 +50,8 @@ struct Settings {
     ///
     /// You can split at various heights or only at the end. You need to create
     /// splits for each multiple that you choose and one for the end. The end is
-    /// at 1125m.
+    /// at 1258m. The last split before the end is at 1150m or below depending
+    /// on the setting.
     when: When,
 }
 
@@ -62,108 +62,143 @@ fn to_meters(y: f32) -> f32 {
 async fn main() {
     let mut settings = Settings::register();
 
+    let mut max_chunk = 0;
+    let mut max_height = 0.0;
+
     loop {
         let process = Process::wait_attach("Furious Fish.exe").await;
         process
             .until_closes(async {
-                let (module, _) = process.wait_module_range("Furious Fish.exe").await;
+                let module = retry(|| process.get_module_address("Furious Fish.exe")).await;
 
                 let scene_tree = SceneTree::wait_locate(&process, module).await;
                 let root_node = scene_tree.wait_get_root(&process).await;
 
-                asr::print_message("Found root node");
+                asr::print_message("Found root");
 
-                let (player_node, start_frame) = asr::future::retry(|| {
-                    // FIXME: The last scene is the "most active one". Michael
-                    // apparently forgot to remove the previous scenes when
-                    // navigating the title and shop.
-                    let game_node = root_node
-                        .get_children()
-                        .iter_back(&process)
-                        .next()?
-                        .1
-                        .deref(&process)
-                        .ok()?;
+                'look_for_player: loop {
+                    let (player_node, game_node, script) = retry(|| {
+                        // FIXME: The last scene is the "most active one". Michael
+                        // apparently forgot to remove the previous scenes when
+                        // navigating the title and shop.
+                        let game_node = root_node
+                            .get_children()
+                            .iter_back(&process)
+                            .next()?
+                            .1
+                            .deref(&process)
+                            .ok()?;
 
-                    let player_node = game_node
-                        .find_child(b"Player", &process)
-                        .ok()??
-                        .unchecked_cast::<Node2D>();
+                        let player_node = game_node
+                            .find_child(b"Player", &process)
+                            .ok()??
+                            .unchecked_cast::<Node2D>();
 
-                    let start_frame = scene_tree.get_frame(&process).ok()?;
+                        let script = player_node
+                            .get_script_instance(&process)
+                            .ok()??
+                            .unchecked_cast::<CSharpScriptInstance>()
+                            .get_gc_handle(&process)
+                            .ok()?;
 
-                    Some((player_node, start_frame))
-                })
-                .await;
+                        Some((player_node, game_node, script))
+                    })
+                    .await;
 
-                timer::start();
-                timer::pause_game_time();
+                    if timer::state() == TimerState::NotRunning {
+                        timer::start();
+                        timer::pause_game_time();
 
-                let mut max_chunk = 0;
-                let mut max_height = 0.0;
-                let mut height = Watcher::new();
+                        max_chunk = 0;
+                        max_height = 0.0;
+                    }
 
-                loop {
-                    next_tick().await;
+                    let mut ended = false;
 
-                    let Some(y) =
-                        height.update(player_node.get_position(&process).ok().map(|[_, y]| y))
-                    else {
-                        continue;
-                    };
+                    asr::print_message("Found player");
 
-                    let Ok(frame) = scene_tree.get_frame(&process) else {
-                        continue;
-                    };
+                    loop {
+                        next_tick().await;
 
-                    let meters = to_meters(y.current);
+                        // Once we reach the end, just wait for the game scene
+                        // to get unloaded.
+                        if ended {
+                            let Some((_, last_node)) =
+                                root_node.get_children().iter_back(&process).next()
+                            else {
+                                continue;
+                            };
 
-                    if timer::state() == TimerState::Running {
+                            let Ok(last_node) = last_node.deref(&process) else {
+                                continue;
+                            };
+
+                            if last_node.addr() != game_node.addr() {
+                                asr::print_message("Back to title");
+                                continue 'look_for_player;
+                            }
+
+                            continue;
+                        }
+
+                        let Ok(position @ [_, y]) = player_node.get_position(&process) else {
+                            continue;
+                        };
+
+                        let Ok(instance_data) = script.get_instance_data(&process) else {
+                            continue;
+                        };
+
+                        // player.totalTime (use .NET Info in Cheat Engine to
+                        // find the offset)
+                        let Ok(total_time) = instance_data.read_at_byte_offset(0x1bc, &process)
+                        else {
+                            continue;
+                        };
+
+                        let meters = to_meters(y);
+
                         if meters > max_height {
                             max_height = meters;
                         }
 
-                        timer::set_game_time(time_util::frame_count::<60>(
-                            (frame - start_frame) as u64,
-                        ));
+                        timer::set_game_time(Duration::saturating_seconds_f32(total_time));
 
-                        if should_split(y.current, &mut settings, &mut max_chunk) {
+                        if let Some(is_at_end) =
+                            should_split(position, &mut settings, &mut max_chunk)
+                        {
                             timer::split();
+                            ended = is_at_end;
                         }
+
+                        let mut buf = ArrayString::<16>::new();
+                        let mut itoa_buf = itoa::Buffer::new();
+                        let _ = buf.try_push_str(itoa_buf.format(meters as i32));
+                        let _ = buf.try_push('m');
+
+                        timer::set_variable("Height", &buf);
+
+                        buf.clear();
+                        let _ = buf.try_push_str(itoa_buf.format(max_height as i32));
+                        let _ = buf.try_push('m');
+
+                        timer::set_variable("Max Height", &buf);
                     }
-
-                    let mut buf = ArrayString::<16>::new();
-                    let mut itoa_buf = itoa::Buffer::new();
-                    let _ = buf.try_push_str(itoa_buf.format(meters as i32));
-                    let _ = buf.try_push('m');
-
-                    timer::set_variable("Height", &buf);
-
-                    buf.clear();
-                    let _ = buf.try_push_str(itoa_buf.format(max_height as i32));
-                    let _ = buf.try_push('m');
-
-                    timer::set_variable("Max Height", &buf);
                 }
             })
             .await;
-
-        if timer::state() != TimerState::NotRunning {
-            timer::reset();
-        }
     }
 }
 
 #[allow(clippy::inconsistent_digit_grouping)]
-fn should_split(y: f32, settings: &mut Settings, max_chunk: &mut i32) -> bool {
-    if y <= -1125_78.67 {
-        return true;
+fn should_split([x, y]: [f32; 2], settings: &mut Settings, max_chunk: &mut i32) -> Option<bool> {
+    if y <= -1258_37.3 && (-390.5632..=121.44321).contains(&x) {
+        return Some(true);
     }
 
-    if y < -1120_00.0 {
-        // This is to make sure that at 1125m we only split the very final
-        // split, not any multiple.
-        return false;
+    if y < -1160_00.0 {
+        // This is to make sure that 1150m is the last split before the end.
+        return None;
     }
 
     settings.update();
@@ -172,8 +207,8 @@ fn should_split(y: f32, settings: &mut Settings, max_chunk: &mut i32) -> bool {
 
     if chunk > *max_chunk {
         *max_chunk = chunk;
-        true
+        Some(false)
     } else {
-        false
+        None
     }
 }
