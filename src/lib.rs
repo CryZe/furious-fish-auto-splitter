@@ -3,13 +3,14 @@
 use asr::{
     future::{next_tick, retry},
     game_engine::godot::{CSharpScriptInstance, Node2D, SceneTree},
-    itoa,
+    itoa, set_tick_rate,
     settings::Gui,
     string::ArrayString,
     time::Duration,
     timer::{self, TimerState},
     Process,
 };
+use bytemuck::{Pod, Zeroable};
 
 asr::async_main!(stable);
 asr::panic_handler!();
@@ -55,20 +56,37 @@ struct Settings {
     when: When,
 }
 
+#[derive(Copy, Clone, Zeroable, Pod)]
+#[repr(C)]
+struct Stats {
+    total_jumps: i32,
+    total_time: f32,
+}
+
 fn to_meters(y: f32) -> f32 {
     y * TO_METERS as f32
+}
+
+#[derive(Default)]
+struct Run {
+    max_chunk: i32,
+    max_height: f32,
+    previous_time: f32,
 }
 
 async fn main() {
     let mut settings = Settings::register();
 
-    let mut max_chunk = 0;
-    let mut max_height = 0.0;
+    let mut run = Run::default();
 
     loop {
+        set_tick_rate(1.0);
+
         let process = Process::wait_attach("Furious Fish.exe").await;
         process
             .until_closes(async {
+                set_tick_rate(120.0);
+
                 let module = retry(|| process.get_module_address("Furious Fish.exe")).await;
 
                 let scene_tree = SceneTree::wait_locate(&process, module).await;
@@ -107,39 +125,21 @@ async fn main() {
 
                     if timer::state() == TimerState::NotRunning {
                         timer::start();
-                        timer::pause_game_time();
-
-                        max_chunk = 0;
-                        max_height = 0.0;
+                        run = Run::default();
+                    } else {
+                        timer::resume_game_time();
+                        // Delay on restarting the game, as the save file may
+                        // not have been loaded yet.
+                        for _ in 0..60 {
+                            next_tick().await;
+                        }
                     }
-
-                    let mut ended = false;
+                    timer::pause_game_time();
 
                     asr::print_message("Found player");
 
                     loop {
                         next_tick().await;
-
-                        // Once we reach the end, just wait for the game scene
-                        // to get unloaded.
-                        if ended {
-                            let Some((_, last_node)) =
-                                root_node.get_children().iter_back(&process).next()
-                            else {
-                                continue;
-                            };
-
-                            let Ok(last_node) = last_node.deref(&process) else {
-                                continue;
-                            };
-
-                            if last_node.addr() != game_node.addr() {
-                                asr::print_message("Back to title");
-                                continue 'look_for_player;
-                            }
-
-                            continue;
-                        }
 
                         let Ok(position @ [_, y]) = player_node.get_position(&process) else {
                             continue;
@@ -151,24 +151,55 @@ async fn main() {
 
                         // player.totalTime (use .NET Info in Cheat Engine to
                         // find the offset)
-                        let Ok(total_time) = instance_data.read_at_byte_offset(0x1bc, &process)
+                        let Ok(stats) =
+                            instance_data.read_at_byte_offset::<Stats, _>(0x1b8, &process)
                         else {
                             continue;
                         };
 
+                        if run.previous_time > stats.total_time {
+                            timer::reset();
+                            timer::start();
+                            timer::pause_game_time();
+                            run = Run::default();
+                        }
+                        run.previous_time = stats.total_time;
+
                         let meters = to_meters(y);
 
-                        if meters > max_height {
-                            max_height = meters;
+                        if meters > run.max_height {
+                            run.max_height = meters;
                         }
 
-                        timer::set_game_time(Duration::saturating_seconds_f32(total_time));
+                        timer::set_game_time(Duration::saturating_seconds_f32(stats.total_time));
 
                         if let Some(is_at_end) =
-                            should_split(position, &mut settings, &mut max_chunk)
+                            should_split(position, &mut settings, &mut run.max_chunk)
                         {
                             timer::split();
-                            ended = is_at_end;
+
+                            if is_at_end {
+                                // Once we reach the end, just wait for the game scene
+                                // to get unloaded.
+                                loop {
+                                    next_tick().await;
+
+                                    let Some((_, last_node)) =
+                                        root_node.get_children().iter_back(&process).next()
+                                    else {
+                                        continue;
+                                    };
+
+                                    let Ok(last_node) = last_node.deref(&process) else {
+                                        continue;
+                                    };
+
+                                    if last_node.addr() != game_node.addr() {
+                                        asr::print_message("Back to title");
+                                        continue 'look_for_player;
+                                    }
+                                }
+                            }
                         }
 
                         let mut buf = ArrayString::<16>::new();
@@ -179,10 +210,12 @@ async fn main() {
                         timer::set_variable("Height", &buf);
 
                         buf.clear();
-                        let _ = buf.try_push_str(itoa_buf.format(max_height as i32));
+                        let _ = buf.try_push_str(itoa_buf.format(run.max_height as i32));
                         let _ = buf.try_push('m');
 
                         timer::set_variable("Max Height", &buf);
+
+                        timer::set_variable("Jumps", itoa_buf.format(stats.total_jumps));
                     }
                 }
             })
