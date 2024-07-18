@@ -59,12 +59,38 @@ struct Settings {
 #[derive(Copy, Clone, Zeroable, Pod)]
 #[repr(C)]
 struct Stats {
+    total_distance_fallen: f32,
     total_jumps: i32,
     total_time: f32,
 }
 
 fn to_meters(y: f32) -> f32 {
     y * TO_METERS as f32
+}
+
+impl Stats {
+    fn calculate_sexiness(&self) -> &'static str {
+        // TODO: Exclusive ranges in Rust 1.80 (2024-07-25)
+        match (self.total_distance_fallen * 0.01) as i32 {
+            ..=99 => "S+",
+            100..=299 => "S",
+            300..=499 => "S-",
+            500..=799 => "A+",
+            800..=1199 => "A",
+            1200..=1799 => "A-",
+            1800..=2499 => "B+",
+            2500..=3499 => "B",
+            3500..=4999 => "B-",
+            5000..=6999 => "C+",
+            7000..=9499 => "C",
+            9500..=13999 => "C-",
+            14000..=19999 => "D+",
+            20000..=29999 => "D",
+            30000..=39999 => "D-",
+            40000..=49999 => "F+",
+            50000.. => "F",
+        }
+    }
 }
 
 #[derive(Default)]
@@ -149,10 +175,10 @@ async fn main() {
                             continue;
                         };
 
-                        // player.totalTime (use .NET Info in Cheat Engine to
+                        // player.totalDistanceFallen (use .NET Info in Cheat Engine to
                         // find the offset)
                         let Ok(stats) =
-                            instance_data.read_at_byte_offset::<Stats, _>(0x1b8, &process)
+                            instance_data.read_at_byte_offset::<Stats, _>(0x1c4, &process)
                         else {
                             continue;
                         };
@@ -216,6 +242,8 @@ async fn main() {
                         timer::set_variable("Max Height", &buf);
 
                         timer::set_variable("Jumps", itoa_buf.format(stats.total_jumps));
+
+                        timer::set_variable("Sexiness", stats.calculate_sexiness());
                     }
                 }
             })
